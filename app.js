@@ -65,7 +65,7 @@ function render() {
   const v = $('#view');
   if (tab === 'diary') v.innerHTML = diaryHtml();
   else if (tab === 'foods') { v.innerHTML = foodsHtml(); renderFoodList(); }
-  else v.innerHTML = settingsHtml();
+  else { v.innerHTML = settingsHtml(); updateGoalsPreview(); }
 }
 
 function dayLabel() {
@@ -338,11 +338,21 @@ async function scanSheet() {
 
 /* ---------- ajustes ---------- */
 function settingsHtml() {
-  const g = db.settings.goals;
+  const s = db.settings, g = s.goals, lvl = s.level || '1.5';
+  const opt = (v, label) => `<option value="${v}" ${v === lvl ? 'selected' : ''}>${label}</option>`;
   return `<h1>Ajustes</h1>
   <div class="card">
-    <h3>Metas diárias</h3>
-    <div class="grid2">${NUTS.map(n => `<div><label for="g-${n}">${NUT_LABEL[n]}</label><input id="g-${n}" inputmode="decimal" value="${g[n]}"></div>`).join('')}</div>
+    <h3>Metas e macros</h3>
+    <div class="grid2">
+      <div><label for="g-weight">Seu peso (kg)</label><input id="g-weight" inputmode="decimal" value="${s.weight || ''}"></div>
+      <div><label for="g-kcal">Calorias por dia (kcal)</label><input id="g-kcal" inputmode="decimal" value="${g.kcal}"></div>
+    </div>
+    <label for="g-level">Proteína</label>
+    <select id="g-level">
+      ${opt('2', 'Alta — 2,0 g por kg')}${opt('1.5', 'Média — 1,5 g por kg')}${opt('1', 'Normal — 1,0 g por kg')}${opt('manual', 'Manual — eu defino os macros')}
+    </select>
+    <div class="preview num ${lvl === 'manual' ? 'hidden' : ''}" id="g-auto"></div>
+    <div class="grid2 ${lvl === 'manual' ? '' : 'hidden'}" id="g-manual">${NUTS.slice(1).map(n => `<div><label for="g-${n}">${NUT_LABEL[n]}</label><input id="g-${n}" inputmode="decimal" value="${g[n]}"></div>`).join('')}</div>
     <button class="btn primary block" style="margin-top:14px" data-act="savegoals">Salvar metas</button>
   </div>
   <div class="card"><h3>Sincronização</h3>${syncHtml()}</div>
@@ -367,9 +377,38 @@ function syncHtml() {
   return `<p class="muted">Conectado como ${esc(session.user.email)}.<br><span id="sync-status">${esc(syncStatus)}</span></p>
     <div class="btns"><button class="btn" data-act="signout">Sair</button><button class="btn primary" data-act="syncnow">Sincronizar agora</button></div>`;
 }
+// Proteína pelo peso; gordura = 30% das calorias; carboidrato = o que sobra; fibra = 14 g por 1000 kcal.
+function calcGoals(weight, perKg, kcal) {
+  const protein = Math.round(weight * perKg);
+  const fat = Math.round((kcal * 0.3) / 9);
+  const rest = kcal - protein * 4 - fat * 9;
+  return { kcal, protein, fat, carbs: Math.max(0, Math.round(rest / 4)), fiber: Math.round((kcal / 1000) * 14), short: rest < 0 };
+}
+function updateGoalsPreview() {
+  const lvl = $('#g-level')?.value;
+  if (!lvl) return;
+  $('#g-auto').classList.toggle('hidden', lvl === 'manual');
+  $('#g-manual').classList.toggle('hidden', lvl !== 'manual');
+  if (lvl === 'manual') return;
+  const weight = num($('#g-weight').value), kcal = num($('#g-kcal').value);
+  if (weight <= 0 || kcal <= 0) { $('#g-auto').textContent = 'Informe seu peso e as calorias para calcular os macros.'; return; }
+  const c = calcGoals(weight, num(lvl), kcal);
+  const pct = g => Math.round((g / kcal) * 100);
+  $('#g-auto').innerHTML = `<b>Proteína ${c.protein} g</b> (${pct(c.protein * 4)}%) · Carbo ${c.carbs} g (${pct(c.carbs * 4)}%) · Gordura ${c.fat} g (${pct(c.fat * 9)}%) · Fibra ${c.fiber} g`
+    + (c.short ? '<br>As calorias são baixas demais para essa proteína com 30% de gordura; o carboidrato ficou em zero.' : '');
+}
 function saveGoals() {
-  const goals = Object.fromEntries(NUTS.map(n => [n, num($(`#g-${n}`).value)]));
-  put('settings', { ...db.settings, goals });
+  const level = $('#g-level').value, weight = num($('#g-weight').value), kcal = num($('#g-kcal').value);
+  if (kcal <= 0) return toast('Informe as calorias por dia.');
+  let goals;
+  if (level === 'manual') goals = { kcal, ...Object.fromEntries(NUTS.slice(1).map(n => [n, num($(`#g-${n}`).value)])) };
+  else {
+    if (weight <= 0) return toast('Informe seu peso para calcular a proteína.');
+    const { short, ...c } = calcGoals(weight, num(level), kcal);
+    goals = c;
+  }
+  put('settings', { ...db.settings, weight: weight || null, level, goals });
+  render();
   toast('Metas salvas.');
 }
 function exportData() {
@@ -524,6 +563,7 @@ document.addEventListener('input', e => {
   if (e.target.id === 'pick-q') $('#pick-list').innerHTML = foodRows(e.target.value, 'pick');
   else if (e.target.id === 'food-q') renderFoodList();
   else if (e.target.id === 'q-grams') updateQtyPreview();
+  else if (['g-weight', 'g-kcal', 'g-level'].includes(e.target.id)) updateGoalsPreview();
 });
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
