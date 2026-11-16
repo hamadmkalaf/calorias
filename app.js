@@ -37,6 +37,7 @@ const liveEntries = date => Object.values(db.entries).filter(e => !e.deleted && 
 let tab = 'diary';
 let day = isoDate(new Date());
 let sheetCleanup = null;
+let reportMode = 'week';
 
 function toast(msg, ms = 2500) {
   const t = $('#toast');
@@ -384,16 +385,65 @@ function reportText(r) {
     ...r.weeks.map((w, i) => `Semana ${i + 1} (${w.start}–${w.end} ${mon}), ${w.days} dia${w.days === 1 ? '' : 's'}: ${w.days ? line(w) : 'sem registros'}`),
   ].join('\n');
 }
-function reportSheet(month) {
-  const r = reportFor(month);
-  reportSheet.text = reportText(r);
-  const g = r.goals;
-  const block = (title, o) => `<div class="card" style="margin:10px 0 0">
+function statBlock(title, o, g) {
+  return `<div class="card" style="margin:10px 0 0">
       <div class="row between"><h3>${title}</h3><span class="muted">${o.days} dia${o.days === 1 ? '' : 's'} registrado${o.days === 1 ? '' : 's'}</span></div>
       ${o.days ? `<div class="row between" style="margin-top:8px"><span class="num"><b>${f0(avg(o, 'kcal'))}</b> kcal por dia</span><span class="muted num">meta ${f0(g.kcal)}</span></div>
       ${bar(avg(o, 'kcal'), g.kcal)}
-      <div class="muted" style="margin-top:8px">Proteína ${f0(avg(o, 'protein'))} g (meta ${f0(g.protein)}) · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g</div>` : '<div class="empty">Sem registros nesta semana.</div>'}
+      <div class="muted" style="margin-top:8px">Proteína ${f0(avg(o, 'protein'))} g (meta ${f0(g.protein)}) · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g</div>` : '<div class="empty">Sem registros neste período.</div>'}
     </div>`;
+}
+
+/* relatório semanal (segunda a domingo), calculado a partir dos registros ainda guardados */
+const dOf = s => new Date(s + 'T12:00');
+const addDays = (s, n) => { const d = dOf(s); d.setDate(d.getDate() + n); return isoDate(d); };
+const weekStart = s => addDays(s, -((dOf(s).getDay() + 6) % 7));
+const shortDay = s => dOf(s).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' }).replace('.', '');
+const weekLabel = st => { const en = addDays(st, 6); return st.slice(0, 7) === en.slice(0, 7) ? `${dOf(st).getDate()}–${shortDay(en)}` : `${shortDay(st)} – ${shortDay(en)}`; };
+function weeksWithData() {
+  return [...new Set(Object.values(db.entries).filter(e => !e.deleted).map(e => weekStart(e.date)))].sort().reverse();
+}
+function buildWeek(start) {
+  const total = { days: 0, ...Object.fromEntries(NUTS.map(n => [n, 0])) }, days = [];
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(start, i), list = liveEntries(date), d = { date, has: list.length > 0 };
+    for (const n of NUTS) d[n] = list.reduce((a, e) => a + (e[n] || 0), 0);
+    if (d.has) { total.days++; for (const n of NUTS) total[n] += d[n]; }
+    days.push(d);
+  }
+  return { start, days, total };
+}
+function weekSheet(start) {
+  const w = buildWeek(start), prev = buildWeek(addDays(start, -7)), g = db.settings.goals;
+  const wd = s => dOf(s).toLocaleDateString('pt-BR', { weekday: 'short', day: 'numeric' }).replace('.', '');
+  const diff = avg(w.total, 'kcal') - avg(prev.total, 'kcal');
+  const cmp = w.total.days && prev.total.days ? `Semana anterior: ${f0(avg(prev.total, 'kcal'))} kcal por dia (${diff >= 0 ? '+' : '−'}${f0(Math.abs(diff))} nesta semana).` : '';
+  const line = o => `${f0(avg(o, 'kcal'))} kcal/dia · Proteína ${f0(avg(o, 'protein'))} g · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g`;
+  reportSheet.text = [
+    `Relatório semanal: ${weekLabel(start)}`,
+    `Dias registrados: ${w.total.days} de 7`,
+    `Média: ${w.total.days ? line(w.total) : 'sem registros'}`,
+    `Meta: ${f0(g.kcal)} kcal · Proteína ${f0(g.protein)} g`,
+    ...(cmp ? [cmp] : []),
+    '',
+    ...w.days.map(d => `${wd(d.date)}: ${d.has ? `${f0(d.kcal)} kcal · Proteína ${f0(d.protein)} g` : 'sem registro'}`),
+  ].join('\n');
+  openSheet('Semana de ' + weekLabel(start), `
+    <p class="muted" style="margin:0">Médias diárias, considerando só os dias com registro.</p>
+    ${statBlock('Média da semana', w.total, g)}
+    ${cmp ? `<p class="muted" style="margin:10px 2px 0">${cmp}</p>` : ''}
+    <div class="card" style="margin:10px 0 0;padding-bottom:4px">
+      <h3 style="margin-bottom:8px">Dia a dia</h3>
+      ${w.days.map(d => `<div class="item"><div class="grow" style="text-transform:capitalize">${wd(d.date)}</div>
+        <div class="num ${d.has ? '' : 'muted'}">${d.has ? `${f0(d.kcal)} kcal · P ${f0(d.protein)} g` : 'sem registro'}</div></div>`).join('')}
+    </div>
+    <button class="btn primary block" style="margin-top:14px" data-act="sharereport">Compartilhar relatório</button>`);
+}
+
+function reportSheet(month) {
+  const r = reportFor(month);
+  reportSheet.text = reportText(r);
+  const block = (title, o) => statBlock(title, o, r.goals);
   const mon = new Date(Number(month.slice(0, 4)), Number(month.slice(5)) - 1, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
   openSheet('Relatório de ' + monthLabel(month), `
     <p class="muted" style="margin:0">Médias diárias, considerando só os dias com registro.${r.archived ? ' Os registros detalhados deste mês já foram limpos.' : ''}</p>
@@ -448,9 +498,15 @@ function settingsHtml() {
   </div>
   <div class="card"><h3>Sincronização</h3>${syncHtml()}</div>
   <div class="card" style="padding-bottom:4px">
-    <h3>Relatórios mensais</h3>
-    <p class="muted">Resumo por semana. Um mês depois de encerrado, os registros detalhados são limpos e fica só o relatório.</p>
-    ${monthsWithData().map(m => `<button class="item" data-act="report" data-m="${m}"><div class="grow" style="text-transform:capitalize">${esc(monthLabel(m))}</div><span class="muted">${db.reports['report-' + m] && !db.reports['report-' + m].deleted ? 'arquivado' : 'ver'} ›</span></button>`).join('') || '<div class="empty" style="padding-bottom:10px">Ainda não há registros.</div>'}
+    <h3>Relatórios</h3>
+    <div class="btns" style="margin:10px 0 4px">
+      <button class="btn small ${reportMode === 'week' ? 'primary' : ''}" data-act="repmode" data-m="week">Semanal</button>
+      <button class="btn small ${reportMode === 'month' ? 'primary' : ''}" data-act="repmode" data-m="month">Mensal</button>
+    </div>
+    ${reportMode === 'week' ? `<p class="muted">Média diária e dia a dia, de segunda a domingo.</p>
+    ${weeksWithData().map(s => `<button class="item" data-act="week" data-s="${s}"><div class="grow">${esc(weekLabel(s))}</div><span class="muted">${s === weekStart(isoDate(new Date())) ? 'em andamento' : 'ver'} ›</span></button>`).join('') || '<div class="empty" style="padding-bottom:10px">Ainda não há registros.</div>'}`
+    : `<p class="muted">Resumo por semana. Um mês depois de encerrado, os registros detalhados são limpos e fica só o relatório.</p>
+    ${monthsWithData().map(m => `<button class="item" data-act="report" data-m="${m}"><div class="grow" style="text-transform:capitalize">${esc(monthLabel(m))}</div><span class="muted">${db.reports['report-' + m] && !db.reports['report-' + m].deleted ? 'arquivado' : 'ver'} ›</span></button>`).join('') || '<div class="empty" style="padding-bottom:10px">Ainda não há registros.</div>'}`}
   </div>
   <div class="card">
     <h3>Backup</h3>
@@ -649,6 +705,8 @@ const acts = {
   signout: async () => { await sb.auth.signOut(); session = null; render(); },
   syncnow: sync,
   report: d => reportSheet(d.m),
+  week: d => weekSheet(d.s),
+  repmode: d => { reportMode = d.m; render(); },
   sharereport: shareReport,
 };
 let pickMeal = 'snack';
