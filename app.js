@@ -102,7 +102,10 @@ function diaryHtml() {
     </div>
     ${bar(tot.kcal, g.kcal)}
     <div class="macros">${macro('protein', 'Proteína')}${macro('carbs', 'Carbo')}${macro('fat', 'Gordura')}${macro('fiber', 'Fibra')}</div>
-  </div>`;
+  </div>
+  <button class="card row between" data-act="weight" style="width:100%;text-align:left">
+    <span>Peso</span><span class="num muted">${weights()[day] ? fkg(weights()[day]) + ' kg' : 'Registrar'} ›</span>
+  </button>`;
 
   for (const [key, name] of MEALS) {
     const list = entries.filter(e => e.meal === key).sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
@@ -119,6 +122,44 @@ function diaryHtml() {
     </div>`;
   }
   return html;
+}
+
+/* ---------- peso ---------- */
+// As pesagens ficam em settings.weights ({ 'AAAA-MM-DD': kg }) e sincronizam junto com os ajustes.
+const weights = () => db.settings.weights || {};
+const fkg = n => n.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+function weightStats(from, to) {
+  let n = 0, s = 0;
+  for (const [d, kg] of Object.entries(weights())) if (d >= from && d <= to) { n++; s += kg; }
+  return n ? { n, avg: s / n } : null;
+}
+function weightSheet() {
+  const cur = weights()[day];
+  const last = Object.keys(weights()).filter(d => d < day).sort().pop();
+  openSheet('Peso · ' + dayLabel(), `
+    <label for="w-kg">Peso (kg)</label><input id="w-kg" inputmode="decimal" value="${cur ?? ''}" placeholder="Ex.: 80,5">
+    ${last ? `<p class="muted">Pesagem anterior: ${fkg(weights()[last])} kg em ${shortDay(last)}.</p>` : ''}
+    <p class="muted">Pese-se sempre no mesmo horário, de preferência ao acordar. O relatório semanal usa a média das pesagens da semana.</p>
+    <div class="btns" style="margin-top:14px">
+      ${cur ? '<button class="btn danger" data-act="delweight">Remover</button>' : ''}
+      <button class="btn primary" data-act="saveweight">Salvar</button>
+    </div>`);
+  $('#w-kg').focus();
+}
+function saveWeight(remove) {
+  const kg = num($('#w-kg').value);
+  if (!remove && (kg < 20 || kg > 400)) return toast('Informe o peso em kg.');
+  const w = { ...weights() };
+  if (remove) delete w[day]; else w[day] = kg;
+  const s = { ...db.settings, weights: w };
+  const latest = Object.keys(w).sort().pop();
+  if (latest) { // o peso mais recente passa a valer para a meta de proteína por kg
+    s.weight = w[latest];
+    if (s.level && s.level !== 'manual') { const { short, ...g } = calcGoals(s.weight, num(s.level), s.goals.kcal); s.goals = g; }
+  }
+  put('settings', s);
+  closeSheet();
+  render();
 }
 
 /* ---------- alimentos ---------- */
@@ -385,12 +426,13 @@ function reportText(r) {
     ...r.weeks.map((w, i) => `Semana ${i + 1} (${w.start}–${w.end} ${mon}), ${w.days} dia${w.days === 1 ? '' : 's'}: ${w.days ? line(w) : 'sem registros'}`),
   ].join('\n');
 }
-function statBlock(title, o, g) {
+function statBlock(title, o, g, wt) {
   return `<div class="card" style="margin:10px 0 0">
       <div class="row between"><h3>${title}</h3><span class="muted">${o.days} dia${o.days === 1 ? '' : 's'} registrado${o.days === 1 ? '' : 's'}</span></div>
       ${o.days ? `<div class="row between" style="margin-top:8px"><span class="num"><b>${f0(avg(o, 'kcal'))}</b> kcal por dia</span><span class="muted num">meta ${f0(g.kcal)}</span></div>
       ${bar(avg(o, 'kcal'), g.kcal)}
       <div class="muted" style="margin-top:8px">Proteína ${f0(avg(o, 'protein'))} g (meta ${f0(g.protein)}) · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g</div>` : '<div class="empty">Sem registros neste período.</div>'}
+      ${wt ? `<div class="num" style="margin-top:8px">Peso médio <b>${fkg(wt.avg)} kg</b> <span class="muted">(${wt.n} pesage${wt.n === 1 ? 'm' : 'ns'})</span></div>` : ''}
     </div>`;
 }
 
@@ -417,25 +459,32 @@ function weekSheet(start) {
   const w = buildWeek(start), prev = buildWeek(addDays(start, -7)), g = db.settings.goals;
   const wd = s => dOf(s).toLocaleDateString('pt-BR', { weekday: 'short', day: 'numeric' }).replace('.', '');
   const diff = avg(w.total, 'kcal') - avg(prev.total, 'kcal');
-  const cmp = w.total.days && prev.total.days ? `Semana anterior: ${f0(avg(prev.total, 'kcal'))} kcal por dia (${diff >= 0 ? '+' : '−'}${f0(Math.abs(diff))} nesta semana).` : '';
+  const cmpK = w.total.days && prev.total.days ? `Semana anterior: ${f0(avg(prev.total, 'kcal'))} kcal por dia (${diff >= 0 ? '+' : '−'}${f0(Math.abs(diff))} nesta semana).` : '';
+  const ws = weightStats(start, addDays(start, 6)), pw = weightStats(addDays(start, -7), addDays(start, -1));
+  const wdiff = ws && pw ? ws.avg - pw.avg : 0;
+  const cmpW = ws && pw ? `Peso médio na semana anterior: ${fkg(pw.avg)} kg (${wdiff >= 0 ? '+' : '−'}${fkg(Math.abs(wdiff))} kg nesta semana).` : '';
+  const cmp = [cmpK, cmpW].filter(Boolean).join(' ');
+  const dayW = d => (weights()[d.date] ? `${fkg(weights()[d.date])} kg` : '');
   const line = o => `${f0(avg(o, 'kcal'))} kcal/dia · Proteína ${f0(avg(o, 'protein'))} g · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g`;
   reportSheet.text = [
     `Relatório semanal: ${weekLabel(start)}`,
     `Dias registrados: ${w.total.days} de 7`,
     `Média: ${w.total.days ? line(w.total) : 'sem registros'}`,
     `Meta: ${f0(g.kcal)} kcal · Proteína ${f0(g.protein)} g`,
-    ...(cmp ? [cmp] : []),
+    ...(ws ? [`Peso médio: ${fkg(ws.avg)} kg (${ws.n} pesage${ws.n === 1 ? 'm' : 'ns'})`] : []),
+    ...(cmpK ? [cmpK] : []),
+    ...(cmpW ? [cmpW] : []),
     '',
-    ...w.days.map(d => `${wd(d.date)}: ${d.has ? `${f0(d.kcal)} kcal · Proteína ${f0(d.protein)} g` : 'sem registro'}`),
+    ...w.days.map(d => `${wd(d.date)}: ${[d.has ? `${f0(d.kcal)} kcal · Proteína ${f0(d.protein)} g` : 'sem registro', dayW(d)].filter(Boolean).join(' · ')}`),
   ].join('\n');
   openSheet('Semana de ' + weekLabel(start), `
     <p class="muted" style="margin:0">Médias diárias, considerando só os dias com registro.</p>
-    ${statBlock('Média da semana', w.total, g)}
+    ${statBlock('Média da semana', w.total, g, ws)}
     ${cmp ? `<p class="muted" style="margin:10px 2px 0">${cmp}</p>` : ''}
     <div class="card" style="margin:10px 0 0;padding-bottom:4px">
       <h3 style="margin-bottom:8px">Dia a dia</h3>
       ${w.days.map(d => `<div class="item"><div class="grow" style="text-transform:capitalize">${wd(d.date)}</div>
-        <div class="num ${d.has ? '' : 'muted'}">${d.has ? `${f0(d.kcal)} kcal · P ${f0(d.protein)} g` : 'sem registro'}</div></div>`).join('')}
+        <div class="num ${d.has ? '' : 'muted'}" style="text-align:right">${d.has ? `${f0(d.kcal)} kcal · P ${f0(d.protein)} g` : 'sem registro'}${dayW(d) ? `<div class="muted">${dayW(d)}</div>` : ''}</div></div>`).join('')}
     </div>
     <button class="btn primary block" style="margin-top:14px" data-act="sharereport">Compartilhar relatório</button>`);
 }
@@ -443,7 +492,8 @@ function weekSheet(start) {
 function reportSheet(month) {
   const r = reportFor(month);
   reportSheet.text = reportText(r);
-  const block = (title, o) => statBlock(title, o, r.goals);
+  const dd = n => `${month}-${String(n).padStart(2, '0')}`;
+  const block = (title, o) => statBlock(title, o, r.goals, weightStats(dd(o.start || 1), dd(o.end || 31)));
   const mon = new Date(Number(month.slice(0, 4)), Number(month.slice(5)) - 1, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
   openSheet('Relatório de ' + monthLabel(month), `
     <p class="muted" style="margin:0">Médias diárias, considerando só os dias com registro.${r.archived ? ' Os registros detalhados deste mês já foram limpos.' : ''}</p>
@@ -706,6 +756,9 @@ const acts = {
   syncnow: sync,
   report: d => reportSheet(d.m),
   week: d => weekSheet(d.s),
+  weight: weightSheet,
+  saveweight: () => saveWeight(false),
+  delweight: () => saveWeight(true),
   repmode: d => { reportMode = d.m; render(); },
   sharereport: shareReport,
 };
@@ -730,6 +783,7 @@ document.addEventListener('keydown', e => {
   if (e.target.id === 'off-q') offSearch();
   else if (e.target.id === 'code-manual') handleCode(e.target.value);
   else if (e.target.id === 'q-grams') saveEntry();
+  else if (e.target.id === 'w-kg') saveWeight(false);
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'import-file' && e.target.files[0]) importData(e.target.files[0]);
