@@ -9,6 +9,7 @@ Diário simples de calorias e macros. Web app instalável (PWA) para Android, se
 - **Código de barras**: lê com a câmera e busca o produto no Open Food Facts. Se não achar, você digita os valores do rótulo uma vez e o produto fica salvo.
 - **Busca online** por nome (Open Food Facts, produtos da Irlanda primeiro).
 - **Funciona offline**; os dados ficam no aparelho e sincronizam com o Supabase quando há login.
+- **Relatórios mensais** por semana (Ajustes). Cada mês fica guardado por inteiro durante todo o mês seguinte; depois os registros detalhados são limpos e fica só o relatório.
 - **Backup** em arquivo (Ajustes > Exportar / Importar).
 
 ## Colocar no ar

@@ -19,7 +19,7 @@ const DEFAULT_GOALS = { kcal: 2000, protein: 150, carbs: 200, fat: 65, fiber: 30
 const LS = 'calorias.v1';
 let db = loadDb();
 function loadDb() {
-  const base = { foods: {}, entries: {}, settings: { goals: { ...DEFAULT_GOALS }, updated_at: 0 }, dirty: {}, lastSeq: 0 };
+  const base = { foods: {}, entries: {}, reports: {}, settings: { goals: { ...DEFAULT_GOALS }, updated_at: 0 }, dirty: {}, lastSeq: 0 };
   try { return { ...base, ...JSON.parse(localStorage.getItem(LS) || '{}') }; } catch { return base; }
 }
 function saveDb() { localStorage.setItem(LS, JSON.stringify(db)); }
@@ -336,6 +336,96 @@ async function scanSheet() {
   }
 }
 
+/* ---------- relatórios mensais ---------- */
+const monthLabel = m => new Date(Number(m.slice(0, 4)), Number(m.slice(5)) - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+function buildReport(month, entries) {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  const byDay = {};
+  for (const e of entries) (byDay[e.date] ??= []).push(e);
+  const blank = () => ({ days: 0, ...Object.fromEntries(NUTS.map(n => [n, 0])) });
+  const total = blank(), weeks = [];
+  for (let start = 1; start <= last;) { // semanas de segunda a domingo, cortadas nos limites do mês
+    const dow = (new Date(y, m - 1, start).getDay() + 6) % 7;
+    const end = Math.min(last, start + 6 - dow);
+    const w = { start, end, ...blank() };
+    for (let d = start; d <= end; d++) {
+      const list = byDay[`${month}-${String(d).padStart(2, '0')}`];
+      if (!list) continue;
+      w.days++; total.days++;
+      for (const n of NUTS) { const s = list.reduce((a, e) => a + (e[n] || 0), 0); w[n] += s; total[n] += s; }
+    }
+    weeks.push(w);
+    start = end + 1;
+  }
+  return { id: 'report-' + month, month, weeks, total, goals: { ...db.settings.goals }, created_at: Date.now() };
+}
+function monthsWithData() {
+  const live = new Set(Object.values(db.entries).filter(e => !e.deleted).map(e => e.date.slice(0, 7)));
+  const done = Object.values(db.reports).filter(r => !r.deleted).map(r => r.month);
+  return [...new Set([...live, ...done])].sort().reverse();
+}
+function reportFor(month) {
+  const saved = db.reports['report-' + month];
+  if (saved && !saved.deleted) return { ...saved, archived: true };
+  return buildReport(month, Object.values(db.entries).filter(e => !e.deleted && e.date.startsWith(month)));
+}
+const avg = (o, n) => (o.days ? o[n] / o.days : 0);
+function reportText(r) {
+  const mon = new Date(Number(r.month.slice(0, 4)), Number(r.month.slice(5)) - 1, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
+  const line = o => `${f0(avg(o, 'kcal'))} kcal/dia · Proteína ${f0(avg(o, 'protein'))} g · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g`;
+  return [
+    `Relatório de ${monthLabel(r.month)}`,
+    `Dias registrados: ${r.total.days}`,
+    `Média do mês: ${line(r.total)}`,
+    `Meta: ${f0(r.goals.kcal)} kcal · Proteína ${f0(r.goals.protein)} g`,
+    '',
+    ...r.weeks.map((w, i) => `Semana ${i + 1} (${w.start}–${w.end} ${mon}), ${w.days} dia${w.days === 1 ? '' : 's'}: ${w.days ? line(w) : 'sem registros'}`),
+  ].join('\n');
+}
+function reportSheet(month) {
+  const r = reportFor(month);
+  reportSheet.text = reportText(r);
+  const g = r.goals;
+  const block = (title, o) => `<div class="card" style="margin:10px 0 0">
+      <div class="row between"><h3>${title}</h3><span class="muted">${o.days} dia${o.days === 1 ? '' : 's'} registrado${o.days === 1 ? '' : 's'}</span></div>
+      ${o.days ? `<div class="row between" style="margin-top:8px"><span class="num"><b>${f0(avg(o, 'kcal'))}</b> kcal por dia</span><span class="muted num">meta ${f0(g.kcal)}</span></div>
+      ${bar(avg(o, 'kcal'), g.kcal)}
+      <div class="muted" style="margin-top:8px">Proteína ${f0(avg(o, 'protein'))} g (meta ${f0(g.protein)}) · Carbo ${f0(avg(o, 'carbs'))} g · Gordura ${f0(avg(o, 'fat'))} g · Fibra ${f0(avg(o, 'fiber'))} g</div>` : '<div class="empty">Sem registros nesta semana.</div>'}
+    </div>`;
+  const mon = new Date(Number(month.slice(0, 4)), Number(month.slice(5)) - 1, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
+  openSheet('Relatório de ' + monthLabel(month), `
+    <p class="muted" style="margin:0">Médias diárias, considerando só os dias com registro.${r.archived ? ' Os registros detalhados deste mês já foram limpos.' : ''}</p>
+    ${block('Mês inteiro', r.total)}
+    ${r.weeks.map((w, i) => block(`Semana ${i + 1} · ${w.start}–${w.end} ${mon}`, w)).join('')}
+    <button class="btn primary block" style="margin-top:14px" data-act="sharereport">Compartilhar relatório</button>`);
+}
+async function shareReport() {
+  const text = reportSheet.text;
+  try {
+    if (navigator.share) await navigator.share({ title: text.split('\n')[0], text });
+    else { await navigator.clipboard.writeText(text); toast('Relatório copiado.'); }
+  } catch (e) { if (e?.name !== 'AbortError') toast('Não foi possível compartilhar.'); }
+}
+// Cada mês fica guardado por inteiro durante todo o mês seguinte; depois vira relatório e os registros são limpos.
+function archiveOldMonths() {
+  const now = new Date();
+  const cutoff = isoDate(new Date(now.getFullYear(), now.getMonth() - 1, 1)).slice(0, 7);
+  const old = {};
+  for (const e of Object.values(db.entries)) if (!e.deleted && e.date.slice(0, 7) < cutoff) (old[e.date.slice(0, 7)] ??= []).push(e);
+  const months = Object.keys(old).sort();
+  for (const month of months) {
+    const id = 'report-' + month;
+    if (db.reports[id] && !db.reports[id].deleted) continue; // já existe relatório: mantém os registros que chegaram depois
+    put('reports', buildReport(month, old[month]));
+    for (const e of old[month]) put('entries', { id: e.id, date: e.date, deleted: true });
+  }
+  if (months.some(m => db.reports['report-' + m]?.created_at > Date.now() - 5000)) {
+    toast(`Relatório de ${monthLabel(months[months.length - 1])} disponível em Ajustes.`, 5000);
+    if ($('#sheet').classList.contains('hidden')) render();
+  }
+}
+
 /* ---------- ajustes ---------- */
 function settingsHtml() {
   const s = db.settings, g = s.goals, lvl = s.level || '1.5';
@@ -356,6 +446,11 @@ function settingsHtml() {
     <button class="btn primary block" style="margin-top:14px" data-act="savegoals">Salvar metas</button>
   </div>
   <div class="card"><h3>Sincronização</h3>${syncHtml()}</div>
+  <div class="card" style="padding-bottom:4px">
+    <h3>Relatórios mensais</h3>
+    <p class="muted">Resumo por semana. Um mês depois de encerrado, os registros detalhados são limpos e fica só o relatório.</p>
+    ${monthsWithData().map(m => `<button class="item" data-act="report" data-m="${m}"><div class="grow" style="text-transform:capitalize">${esc(monthLabel(m))}</div><span class="muted">${db.reports['report-' + m] && !db.reports['report-' + m].deleted ? 'arquivado' : 'ver'} ›</span></button>`).join('') || '<div class="empty" style="padding-bottom:10px">Ainda não há registros.</div>'}
+  </div>
   <div class="card">
     <h3>Backup</h3>
     <p class="muted">Exporta ou importa todos os seus dados em um arquivo.</p>
@@ -412,7 +507,7 @@ function saveGoals() {
   toast('Metas salvas.');
 }
 function exportData() {
-  const blob = new Blob([JSON.stringify({ foods: db.foods, entries: db.entries, settings: db.settings }, null, 1)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ foods: db.foods, entries: db.entries, reports: db.reports, settings: db.settings }, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `calorias-backup-${isoDate(new Date())}.json`;
@@ -423,7 +518,7 @@ async function importData(file) {
   try {
     const data = JSON.parse(await file.text());
     let n = 0;
-    for (const kind of ['foods', 'entries']) for (const rec of Object.values(data[kind] || {})) {
+    for (const kind of ['foods', 'entries', 'reports']) for (const rec of Object.values(data[kind] || {})) {
       if (!rec?.id) continue;
       const cur = db[kind][rec.id];
       if (!cur || (rec.updated_at || 0) > (cur.updated_at || 0)) { db[kind][rec.id] = rec; db.dirty[`${kind}:${rec.id}`] = 1; n++; }
@@ -463,6 +558,7 @@ function setStatus(s) { syncStatus = s; const el = $('#sync-status'); if (el) el
 async function sync() {
   if (!sb || !session || syncing) return;
   syncing = true;
+  let ok = false;
   setStatus('Sincronizando…');
   try {
     const user_id = session.user.id;
@@ -502,9 +598,11 @@ async function sync() {
     }
     setStatus('Sincronizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + '.');
     if (changed && $('#sheet').classList.contains('hidden')) render();
+    ok = true;
   } catch (e) {
     setStatus('Falha ao sincronizar: ' + (e?.message || 'sem conexão') + '.');
   } finally { syncing = false; }
+  if (ok) archiveOldMonths(); // só limpa meses antigos depois de receber tudo dos outros aparelhos
 }
 async function auth(mode) {
   const email = $('#au-email').value.trim(), password = $('#au-pass').value;
@@ -548,6 +646,8 @@ const acts = {
   signup: () => auth('signup'),
   signout: async () => { await sb.auth.signOut(); session = null; render(); },
   syncnow: sync,
+  report: d => reportSheet(d.m),
+  sharereport: shareReport,
 };
 let pickMeal = 'snack';
 function qtyMealFromPick() { return pickMeal; }
@@ -579,4 +679,5 @@ window.addEventListener('online', sync);
 
 render();
 initSync();
+if (!getCfg()) archiveOldMonths(); // sem sincronização configurada, a limpeza roda ao abrir o app
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');

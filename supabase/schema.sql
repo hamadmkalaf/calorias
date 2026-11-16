@@ -6,13 +6,17 @@ create sequence if not exists public.records_seq;
 create table if not exists public.records (
   user_id    uuid   not null default auth.uid() references auth.users (id) on delete cascade,
   id         text   not null,
-  kind       text   not null check (kind in ('foods', 'entries', 'settings')),
+  kind       text   not null,
   data       jsonb  not null,
   updated_at bigint not null default 0,
   deleted    boolean not null default false,
   seq        bigint not null default nextval('public.records_seq'),
   primary key (user_id, id)
 );
+
+alter table public.records drop constraint if exists records_kind_check;
+alter table public.records add constraint records_kind_check
+  check (kind in ('foods', 'entries', 'reports', 'settings'));
 
 create index if not exists records_user_seq on public.records (user_id, seq);
 
