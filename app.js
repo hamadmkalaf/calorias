@@ -93,6 +93,7 @@ function diaryHtml() {
     <button class="label" data-act="today">${esc(dayLabel())}</button>
     <button data-act="day" data-d="1" aria-label="Próximo dia">›</button>
   </div>
+  ${getCfg() ? `<p class="muted" id="sync-status" style="text-align:center;margin:-6px 0 10px">${esc(session ? syncStatus : authReady ? 'Sem login: os dados ficam só neste aparelho. Entre em Ajustes.' : '')}</p>` : ''}
   <div class="card">
     <div class="row between">
       <div><div class="kcal-big num">${f0(tot.kcal)}</div><div class="muted">de ${f0(g.kcal)} kcal</div></div>
@@ -531,7 +532,7 @@ async function importData(file) {
 
 /* ---------- sincronização (Supabase) ---------- */
 const CFG = 'calorias.cfg';
-let sb = null, session = null, syncing = false, syncTimer = null, syncStatus = 'Ainda não sincronizado.';
+let sb = null, session = null, authReady = false, syncing = false, syncTimer = null, syncStatus = 'Ainda não sincronizado.';
 function getCfg() {
   const c = window.APP_CONFIG || {};
   if (c.supabaseUrl && c.supabaseKey) return c;
@@ -545,8 +546,9 @@ async function initSync() {
     if (!window.supabase) await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js');
     sb = window.supabase.createClient(c.supabaseUrl, c.supabaseKey);
     session = (await sb.auth.getSession()).data.session;
-    sb.auth.onAuthStateChange((_e, s) => { const was = session?.user?.id; session = s; if (s?.user?.id !== was) { if (tab === 'settings') render(); if (s) sync(); } });
-    if (tab === 'settings') render();
+    sb.auth.onAuthStateChange((_e, s) => { const was = session?.user?.id; session = s; if (s?.user?.id !== was) { if ($('#sheet').classList.contains('hidden')) render(); if (s) sync(); } });
+    authReady = true;
+    if ($('#sheet').classList.contains('hidden')) render();
     if (session) sync();
   } catch { syncStatus = 'Sem conexão com o servidor.'; }
 }
@@ -610,7 +612,7 @@ async function auth(mode) {
   if (!sb) return toast('Sem conexão com o servidor.');
   const { data, error } = mode === 'signup' ? await sb.auth.signUp({ email, password }) : await sb.auth.signInWithPassword({ email, password });
   if (error) return toast('Erro: ' + error.message, 4000);
-  if (mode === 'signup' && !data.session) toast('Conta criada. Confirme pelo link enviado ao seu e-mail e depois entre.', 6000);
+  if (mode === 'signup' && !data.session) toast('Conta criada, mas você ainda NÃO está conectado: confirme pelo link enviado ao seu e-mail e depois toque em Entrar.', 9000);
 }
 
 /* ---------- eventos ---------- */
